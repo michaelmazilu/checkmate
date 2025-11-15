@@ -5,3 +5,5 @@ venv
 .env
 devtools
 combined_elite.jsonl
+.model_cache/
+
