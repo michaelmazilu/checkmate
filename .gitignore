@@ -12,3 +12,4 @@ locks
 refs
 combined_stockfish.pgn
 stockfish_training.jsonl
+*.pt
