@@ -101,16 +101,37 @@ class MCTS:
         if not node.board.is_game_over():
             unexplored_moves = node.get_unexplored_moves()
             if unexplored_moves:
-                move = random.choice(unexplored_moves)
+                # Get policy priors from NN for the CURRENT position (before move)
+                P, _ = self.neural_net_fn(node.board.fen())
+                
+                # Choose which unexplored move to expand, weighted by policy priors
+                if P and len(P) > 0:
+                    # Get priors for unexplored moves
+                    move_priors = {}
+                    for m in unexplored_moves:
+                        # Use NN prior if available, else small default value
+                        move_priors[m] = P.get(m, 1e-8)
+                    
+                    # Normalize to get selection probabilities
+                    total_prior = sum(move_priors.values())
+                    if total_prior > 0:
+                        weights = [move_priors[m] / total_prior for m in unexplored_moves]
+                        move = random.choices(unexplored_moves, weights=weights, k=1)[0]
+                        policy_prior = move_priors[move]
+                    else:
+                        # Fallback to uniform if all priors are zero
+                        move = random.choice(unexplored_moves)
+                        policy_prior = 1.0 / len(list(node.board.generate_legal_moves()))
+                else:
+                    # Fallback to uniform if NN returns no policy
+                    move = random.choice(unexplored_moves)
+                    policy_prior = 1.0 / len(list(node.board.generate_legal_moves()))
                 
                 # Create new board state
                 new_board = node.board.copy()
                 new_board.push(move)
                 
                 # Create new node with policy prior from NN
-                _, _ = self.neural_net_fn(new_board.fen())  # Get policy for this position
-                policy_prior = 1.0 / len(list(new_board.generate_legal_moves()))
-                
                 child_node = MCTSNode(
                     new_board, 
                     parent=node, 
