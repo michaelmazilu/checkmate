@@ -4,3 +4,4 @@ venv
 .env.local
 .env
 devtools
+combined_elite.jsonl
