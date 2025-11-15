@@ -11,38 +11,33 @@ from pathlib import Path
 # ============================================================================
 
 # Configuration
-HF_REPO_ID = "raf-fonseca/checkmate-chess"  # Your HuggingFace repo
-MODEL_FILENAME = "checkmate_model.pt"
+LOCAL_MODEL_PATH = Path(__file__).parent.parent / "training" / "checkpoint_epoch_1.pt"
 
-# Try to load the trained model from Hugging Face
+# Try to load the trained model
 USE_TRAINED_MODEL = False
 model = None
 
-print(f"[STARTUP] Loading model from Hugging Face: {HF_REPO_ID}")
+print(f"[STARTUP] Loading model from local checkpoint: {LOCAL_MODEL_PATH}")
 try:
-    from huggingface_hub import hf_hub_download
     import sys
     
-    # Download model from HuggingFace
-    print(f"[STARTUP] Downloading {MODEL_FILENAME}...")
-    model_path = hf_hub_download(
-        repo_id=HF_REPO_ID,
-        filename=MODEL_FILENAME,
-        cache_dir=Path(__file__).parent.parent / ".model_cache"
-    )
-    print(f"[STARTUP] ✓ Model downloaded to {model_path}")
+    # Check if model exists
+    if not LOCAL_MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model file not found at {LOCAL_MODEL_PATH}")
+    
+    print(f"[STARTUP] ✓ Model file found")
     
     # Load inference module
     sys.path.insert(0, str(Path(__file__).parent.parent / "training"))
     from inference import ChessModelInference
     
     # Initialize model
-    model = ChessModelInference(model_path, device="cpu")
+    model = ChessModelInference(str(LOCAL_MODEL_PATH), device="cpu")
     USE_TRAINED_MODEL = True
-    print(f"[STARTUP] ✓ Model loaded successfully from HuggingFace!")
+    print(f"[STARTUP] ✓ Model loaded successfully from checkpoint!")
     
 except Exception as e:
-    print(f"[STARTUP] ⚠ Failed to load model from HuggingFace: {e}")
+    print(f"[STARTUP] ⚠ Failed to load model: {e}")
     print("[STARTUP] Falling back to hardcoded neural network")
     print("[STARTUP] Using uniform priors (P={}) and neutral value (V=0)")
     USE_TRAINED_MODEL = False
