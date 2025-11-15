@@ -22,8 +22,8 @@ volume = modal.Volume.from_name("checkmate-models", create_if_missing=True)
 
 # Configuration
 BATCH_SIZE = 512  # Increased for efficiency with large dataset
-LEARNING_RATE = 0.001
-EPOCHS = 20  # Increased for better convergence with real data
+LEARNING_RATE = 0.001  # Original LR - just continuing training with more data
+EPOCHS = 30  # Extended for Stockfish dataset training
 HIDDEN_DIM = 512
 MODEL_PATH = "/models/checkmate_model.pt"
 CHECKPOINT_DIR = "/models/checkpoints"
@@ -36,6 +36,7 @@ data_volume = modal.Volume.from_name("checkmate-training-data", create_if_missin
 @app.function(
     image=image,
     gpu="T4",  # Use T4 GPU for training
+    memory=32768,  # 32GB RAM to handle large dataset
     timeout=86400,  # 24 hour timeout
     volumes={
         "/models": volume,
@@ -194,12 +195,27 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         Returns:
             integer index for the move (0 to 4351)
         """
-        move = chess.Move.from_uci(move_uci)
+        try:
+            move = chess.Move.from_uci(move_uci)
+        except Exception as e:
+            print(f"WARNING: Invalid UCI move '{move_uci}': {e}, returning 0")
+            return 0
+        
         from_sq = move.from_square
         to_sq = move.to_square
         
+        # Validate square indices
+        if not (0 <= from_sq < 64 and 0 <= to_sq < 64):
+            print(f"WARNING: Invalid square indices for move '{move_uci}': from={from_sq}, to={to_sq}, returning 0")
+            return 0
+        
         # Base index for normal moves
         base_idx = from_sq * 64 + to_sq
+        
+        # Sanity check base index
+        if base_idx >= 4096:
+            print(f"WARNING: Base index {base_idx} >= 4096 for move '{move_uci}', capping at 4095")
+            base_idx = 4095
         
         # Handle promotions
         if move.promotion:
@@ -218,7 +234,11 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
             
             promotion_idx = 4096 + from_file * 32 + to_file * 4 + promotion_type
             
-            assert promotion_idx < 4672, f"Promotion index {promotion_idx} >= 4672 for move {move_uci}"
+            # Final safety check
+            if promotion_idx >= 4672:
+                print(f"WARNING: Promotion index {promotion_idx} >= 4672 for move '{move_uci}', using base index")
+                return base_idx if base_idx < 4672 else 0
+            
             return promotion_idx
         
         return base_idx
@@ -228,21 +248,37 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
     # ========================================================================
     
     class ChessDataset(Dataset):
-        """Dataset for chess positions with moves and values."""
+        """Dataset for chess positions with moves and values - memory efficient version."""
         
-        def __init__(self, data_path=None, sample_data=None):
-            self.data = []
-            
+        def __init__(self, data_path=None, sample_data=None, max_examples=None):
+            """
+            Args:
+                data_path: Path to JSONL file
+                sample_data: Pre-loaded data list
+                max_examples: Maximum number of examples to load (for memory management)
+            """
             if sample_data:
-                # Use provided sample data
-                self.data  = sample_data
+                # Use provided sample data (load into memory)
+                self.data = sample_data
             elif data_path:
-                # Load from JSONL file
+                # Load from JSONL file with optional limit
+                self.data = []
+                print(f"Loading training data from {data_path}...")
+                
                 with open(data_path, 'r') as f:
-                    for line in f:
+                    for i, line in enumerate(f):
+                        if max_examples and i >= max_examples:
+                            print(f"Reached max_examples limit: {max_examples:,}")
+                            break
                         self.data.append(json.loads(line))
-            
-            print(f"Loaded {len(self.data)} training examples")
+                        
+                        # Progress indicator every 10M examples
+                        if (i + 1) % 10_000_000 == 0:
+                            print(f"  Loaded {(i+1):,} examples...")
+                
+                print(f"✓ Loaded {len(self.data):,} training examples")
+            else:
+                self.data = []
         
         def __len__(self):
             return len(self.data)
@@ -345,6 +381,9 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
     import os
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     
+    # Initialize avg_loss in case no training occurs
+    avg_loss = best_loss
+    
     for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_loss = 0.0
@@ -353,37 +392,67 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
         
-        for batch_idx, (boards, moves, values) in enumerate(progress_bar):
-            boards = boards.to(device)
-            moves = moves.squeeze(1).to(device)
-            values = values.to(device)
-            
-            # Forward pass
-            policy_logits, value_pred = model(boards)
-            
-            # Calculate losses
-            policy_loss = policy_criterion(policy_logits, moves)
-            value_loss = value_criterion(value_pred, values)
-            
-            # Combined loss (you can adjust the weighting)
-            loss = policy_loss + value_loss
-            
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # Track metrics
-            total_loss += loss.item()
-            policy_loss_sum += policy_loss.item()
-            value_loss_sum += value_loss.item()
-            
-            # Update progress bar
-            progress_bar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'policy': f'{policy_loss.item():.4f}',
-                'value': f'{value_loss.item():.4f}'
-            })
+        try:
+            for batch_idx, (boards, moves, values) in enumerate(progress_bar):
+                boards = boards.to(device)
+                moves = moves.squeeze(1).to(device)
+                values = values.to(device)
+                
+                # Forward pass
+                policy_logits, value_pred = model(boards)
+                
+                # CRITICAL: Validate move indices before loss computation
+                invalid_moves = moves >= 4672
+                if invalid_moves.any():
+                    print(f"\n❌ INVALID MOVE INDICES DETECTED at epoch {epoch+1}, batch {batch_idx}")
+                    print(f"Invalid moves: {moves[invalid_moves].tolist()}")
+                    print(f"Max index: {moves.max().item()}, Min index: {moves.min().item()}")
+                    # Skip this batch
+                    continue
+                
+                # Calculate losses
+                policy_loss = policy_criterion(policy_logits, moves)
+                value_loss = value_criterion(value_pred, values)
+                
+                # Combined loss (you can adjust the weighting)
+                loss = policy_loss + value_loss
+                
+                # Check for NaN
+                if torch.isnan(loss):
+                    print(f"\n❌ NaN loss detected at epoch {epoch+1}, batch {batch_idx}")
+                    print(f"Policy loss: {policy_loss.item()}, Value loss: {value_loss.item()}")
+                    raise ValueError("NaN loss detected")
+                
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                # Track metrics
+                total_loss += loss.item()
+                policy_loss_sum += policy_loss.item()
+                value_loss_sum += value_loss.item()
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'policy': f'{policy_loss.item():.4f}',
+                    'value': f'{value_loss.item():.4f}'
+                })
+        except Exception as e:
+            print(f"\n❌ Error during epoch {epoch+1}, batch {batch_idx}: {e}")
+            # Save emergency checkpoint
+            emergency_path = f"{CHECKPOINT_DIR}/emergency_checkpoint_epoch_{epoch+1}.pt"
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': total_loss / max(batch_idx, 1),
+                'config': {'input_dim': 773, 'hidden_dim': HIDDEN_DIM, 'max_moves': 4672}
+            }, emergency_path)
+            print(f"Emergency checkpoint saved to {emergency_path}")
+            volume.commit()
+            raise
         
         # Epoch summary
         avg_loss = total_loss / len(train_loader)
@@ -627,7 +696,8 @@ def main(
     download: bool = False,
     push_to_hf: bool = False,
     hf_repo: str = None,
-    resume_from: int = None
+    resume_from: int = None,
+    resume_from_checkpoint: str = None
 ):
     """
     Main entrypoint for training.
@@ -639,8 +709,14 @@ def main(
         # Resume from epoch 5 checkpoint
         modal run training/train.py --resume-from 5
         
+        # Resume from a specific checkpoint file
+        modal run training/train.py --resume-from-checkpoint /models/checkmate_model.pt
+        
         # Train with custom data
-        modal run training/train.py --data-path /path/to/data.jsonl
+        modal run training/train.py --data-path /data/stockfish_training.jsonl
+        
+        # Train with custom data AND resume from checkpoint
+        modal run training/train.py --data-path /data/stockfish_training.jsonl --resume-from-checkpoint /models/checkmate_model.pt
         
         # Download trained model
         modal run training/train.py --download
@@ -675,28 +751,45 @@ def main(
     
     else:
         print("Starting training on Modal...")
-        print(f"Training with 8.1M chess positions from combined_elite.jsonl")
         
         # Determine checkpoint path if resuming
         checkpoint_path = None
-        if resume_from:
-            checkpoint_path = f"/models/checkpoints/checkpoint_epoch_{resume_from}.pt"
+        if resume_from_checkpoint:
+            # Direct checkpoint path provided
+            checkpoint_path = resume_from_checkpoint
             print(f"Will resume from checkpoint: {checkpoint_path}")
+        elif resume_from:
+            # Epoch number provided
+            checkpoint_path = f"/models/checkpoints/checkpoint_epoch_{resume_from}.pt"
+            print(f"Will resume from epoch {resume_from} checkpoint: {checkpoint_path}")
+        
+        # Determine data source
+        if data_path:
+            print(f"Training with custom dataset: {data_path}")
+        else:
+            print(f"Training with default dataset: /data/combined_elite.jsonl")
         
         # Train the model
-        result = train_model.remote(data_path=data_path, resume_from_checkpoint=checkpoint_path)
-        print(f"\nTraining results: {result}")
-        
-        # Automatically push to HuggingFace after training
-        print("\n" + "=" * 80)
-        print("PUSHING TO HUGGING FACE")
-        print("=" * 80)
         try:
-            hf_result = push_to_huggingface.remote(HF_REPO_ID)
-            print(f"\n✅ Success! Model available at: {hf_result['url']}")
-            print("\nYour bot will automatically download this model on next run!")
+            result = train_model.remote(data_path=data_path, resume_from_checkpoint=checkpoint_path)
+            print(f"\nTraining results: {result}")
+            
+            # Automatically push to HuggingFace after training
+            print("\n" + "=" * 80)
+            print("PUSHING TO HUGGING FACE")
+            print("=" * 80)
+            try:
+                hf_result = push_to_huggingface.remote(HF_REPO_ID)
+                print(f"\n✅ Success! Model available at: {hf_result['url']}")
+                print("\nYour bot will automatically download this model on next run!")
+            except Exception as e:
+                print(f"\n⚠️ Failed to push to HuggingFace: {e}")
+                print("You can manually push later with:")
+                print(f"  modal run training/train.py --push-to-hf --hf-repo {HF_REPO_ID}")
         except Exception as e:
-            print(f"\n⚠️ Failed to push to HuggingFace: {e}")
-            print("You can manually push later with:")
-            print(f"  modal run training/train.py --push-to-hf --hf-repo {HF_REPO_ID}")
+            print(f"\n❌ Training failed with error:")
+            print(f"{type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
