@@ -43,7 +43,7 @@ class MCTSNode:
         
         return exploitation + exploration
     
-    def select_best_child(self, c_puct=1.0):
+    def select_best_child(self, c_puct=1):
         """Select child with highest UCB score for tree traversal."""
         if not self.children:
             return None
@@ -59,7 +59,7 @@ class MCTSNode:
 class MCTS:
     """Monte Carlo Tree Search implementation."""
     
-    def __init__(self, board, neural_net_fn, num_simulations=100, c_puct=1.0):
+    def __init__(self, board, neural_net_fn, num_simulations=4000, c_puct=1):
         """
         Initialize MCTS search.
         

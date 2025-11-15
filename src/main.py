@@ -91,7 +91,7 @@ def test_func(ctx: GameContext):
     start_time = time.time()
     
     # Initialize MCTS and run search
-    mcts = MCTS(ctx.board, neural_net, num_simulations=100, c_puct=1.0)
+    mcts = MCTS(ctx.board, neural_net, num_simulations=2000, c_puct=1.0)
     mcts.search()
     
     elapsed = time.time() - start_time
