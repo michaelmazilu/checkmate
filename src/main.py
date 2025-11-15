@@ -1,40 +1,77 @@
 from .utils import chess_manager, GameContext
+from .mcts import MCTS
 from chess import Move
-import random
 import time
 
-# Write code here that runs once
-# Can do things like load models from huggingface, make connections to subprocesses, etcwenis
+
+def neural_net(board_fen: str):
+    """
+    Returns policy priors (P) and position evaluation (V) for a given board state.
+    
+    This is a placeholder with hardcoded outputs. In production, this would load
+    a trained neural network and return actual predictions.
+    
+    Args:
+        board_fen: Board state in FEN format
+        
+    Returns:
+        P: Dict mapping moves (as Move objects) to probabilities (0-1)
+           These represent the NN's prior belief about which moves are good
+        V: Float in range [-1, 1] representing position evaluation
+           Positive = current player winning, Negative = current player losing
+    """
+    # Hardcoded policy priors: uniform distribution over all moves
+    # (In real NN, this would be a learned probability distribution)
+    P = {}
+    
+    # Hardcoded value: always return 0.0 (neutral position)
+    # (In real NN, this would be trained to predict win probability)
+    V = 0.0
+    
+    print(f"[NN] FEN: {board_fen[:50]}... -> P: {len(P)} moves, V: {V:.3f}")
+    
+    return P, V
 
 
 @chess_manager.entrypoint
 def test_func(ctx: GameContext):
-    # This gets called every time the model needs to make a move
-    # Return a python-chess Move object that is a legal move for the current position
-
-    print("Cooking move...")
-    print(ctx.board.move_stack)
-    time.sleep(0.1)
-
-    legal_moves = list(ctx.board.generate_legal_moves())
-    if not legal_moves:
+    """Main inference function. Uses MCTS to select the best move."""
+    print("Running MCTS search...")
+    start_time = time.time()
+    
+    # Initialize MCTS and run search
+    mcts = MCTS(ctx.board, neural_net, num_simulations=100, c_puct=1.0)
+    mcts.search()
+    
+    elapsed = time.time() - start_time
+    print(f"Search completed in {elapsed:.2f}s")
+    
+    # Get best move and move probabilities
+    best_move = mcts.get_best_move()
+    move_probs = mcts.get_move_probabilities()
+    
+    if best_move is None:
         ctx.logProbabilities({})
-        raise ValueError("No legal moves available (i probably lost didn't i)")
-
-    move_weights = [random.random() for _ in legal_moves]
-    total_weight = sum(move_weights)
-    # Normalize so probabilities sum to 1
-    move_probs = {
-        move: weight / total_weight
-        for move, weight in zip(legal_moves, move_weights)
-    }
+        raise ValueError("No legal moves available")
+    
+    # Log the move probabilities for analysis (using Move objects as keys)
     ctx.logProbabilities(move_probs)
-
-    return random.choices(legal_moves, weights=move_weights, k=1)[0]
+    
+    # Print top 5 moves by visit count
+    print("\n[MCTS Results] Top 5 moves:")
+    sorted_moves = sorted(move_probs.items(), key=lambda x: x[1], reverse=True)[:5]
+    for i, (move, prob) in enumerate(sorted_moves, 1):
+        visits = mcts.root.children[move].visit_count
+        avg_value = mcts.root.children[move].value_sum / visits if visits > 0 else 0
+        print(f"  {i}. {move} - Prob: {prob:.3f}, Visits: {visits}, Avg Value: {avg_value:.3f}")
+    
+    print(f"\n[BEST MOVE] {best_move} (visits: {mcts.root.children[best_move].visit_count})")
+    
+    return best_move
 
 
 @chess_manager.reset
 def reset_func(ctx: GameContext):
-    # This gets called when a new game begins
-    # Should do things like clear caches, reset model state, etc.
+    """Called when a new game begins. Use for initialization/cleanup."""
+    print("Starting new game...")
     pass
