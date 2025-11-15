@@ -2,14 +2,55 @@ from .utils import chess_manager, GameContext
 from .mcts import MCTS
 from chess import Move
 import time
+import chess
+import os
+from pathlib import Path
+
+# ============================================================================
+# NEURAL NETWORK SETUP
+# ============================================================================
+
+# Configuration
+HF_REPO_ID = "raf-fonseca/checkmate-chess"  # Your HuggingFace repo
+MODEL_FILENAME = "checkmate_model.pt"
+
+# Try to load the trained model from Hugging Face
+USE_TRAINED_MODEL = False
+model = None
+
+print(f"[STARTUP] Loading model from Hugging Face: {HF_REPO_ID}")
+try:
+    from huggingface_hub import hf_hub_download
+    import sys
+    
+    # Download model from HuggingFace
+    print(f"[STARTUP] Downloading {MODEL_FILENAME}...")
+    model_path = hf_hub_download(
+        repo_id=HF_REPO_ID,
+        filename=MODEL_FILENAME,
+        cache_dir=Path(__file__).parent.parent / ".model_cache"
+    )
+    print(f"[STARTUP] ✓ Model downloaded to {model_path}")
+    
+    # Load inference module
+    sys.path.insert(0, str(Path(__file__).parent.parent / "training"))
+    from inference import ChessModelInference
+    
+    # Initialize model
+    model = ChessModelInference(model_path, device="cpu")
+    USE_TRAINED_MODEL = True
+    print(f"[STARTUP] ✓ Model loaded successfully from HuggingFace!")
+    
+except Exception as e:
+    print(f"[STARTUP] ⚠ Failed to load model from HuggingFace: {e}")
+    print("[STARTUP] Falling back to hardcoded neural network")
+    print("[STARTUP] Using uniform priors (P={}) and neutral value (V=0)")
+    USE_TRAINED_MODEL = False
 
 
 def neural_net(board_fen: str):
     """
     Returns policy priors (P) and position evaluation (V) for a given board state.
-    
-    This is a placeholder with hardcoded outputs. In production, this would load
-    a trained neural network and return actual predictions.
     
     Args:
         board_fen: Board state in FEN format
@@ -20,17 +61,18 @@ def neural_net(board_fen: str):
         V: Float in range [-1, 1] representing position evaluation
            Positive = current player winning, Negative = current player losing
     """
-    # Hardcoded policy priors: uniform distribution over all moves
-    # (In real NN, this would be a learned probability distribution)
-    P = {}
-    
-    # Hardcoded value: always return 0.0 (neutral position)
-    # (In real NN, this would be trained to predict win probability)
-    V = 0.0
-    
-    print(f"[NN] FEN: {board_fen[:50]}... -> P: {len(P)} moves, V: {V:.3f}")
-    
-    return P, V
+    if USE_TRAINED_MODEL:
+        # Use trained neural network
+        board = chess.Board(board_fen)
+        P, V = model.predict(board_fen, board)
+        print(f"[NN] Trained model -> P: {len(P)} moves, V: {V:.3f}")
+        return P, V
+    else:
+        # Hardcoded fallback (uniform distribution)
+        P = {}
+        V = 0.0
+        print(f"[NN] Hardcoded -> P: {len(P)} moves, V: {V:.3f}")
+        return P, V
 
 
 @chess_manager.entrypoint
