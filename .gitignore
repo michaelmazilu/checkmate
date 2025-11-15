@@ -6,4 +6,5 @@ venv
 devtools
 combined_elite.jsonl
 .model_cache/
+combined_stockfish.pgn
 
