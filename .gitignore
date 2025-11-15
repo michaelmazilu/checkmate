@@ -6,5 +6,9 @@ venv
 devtools
 combined_elite.jsonl
 .model_cache/
+blobs
+snapshots
+locks
+refs
 combined_stockfish.pgn
-
+stockfish_training.jsonl

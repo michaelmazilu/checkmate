@@ -79,26 +79,35 @@ def encode_board(fen: str) -> np.ndarray:
 
 
 def decode_move_index(idx: int) -> str:
-    """Decode a move index back to UCI format."""
-    # Handle promotions
-    if idx >= 4096 * 3:
-        promotion = 'q'
-        idx -= 4096 * 3
-    elif idx >= 4096 * 2:
-        promotion = 'r'
-        idx -= 4096 * 2
-    elif idx >= 4096:
-        promotion = 'b'
-        idx -= 4096
+    """
+    Decode a move index back to UCI format.
+    
+    Encoding scheme:
+    - Normal moves (0-4095): from_square * 64 + to_square
+    - Promotions (4096-4351): 4096 + from_file * 32 + to_file * 4 + promotion_type
+    """
+    if idx >= 4096:
+        # Promotion move
+        promo_idx = idx - 4096
+        promotion_type = promo_idx % 4
+        promo_idx //= 4
+        to_file = promo_idx % 8
+        from_file = promo_idx // 8
+        
+        # Promotions are from rank 7 to 8 (white) or rank 2 to 1 (black)
+        # Assume white promotion for decoding (from rank 7 to 8)
+        from_square = 48 + from_file  # Rank 7
+        to_square = 56 + to_file       # Rank 8
+        
+        promotion_map = {0: 'n', 1: 'b', 2: 'r', 3: 'q'}
+        promotion = promotion_map.get(promotion_type, 'q')
+        
+        move_uci = chess.square_name(from_square) + chess.square_name(to_square) + promotion
     else:
-        promotion = None
-    
-    from_square = idx // 64
-    to_square = idx % 64
-    
-    move_uci = chess.square_name(from_square) + chess.square_name(to_square)
-    if promotion:
-        move_uci += promotion
+        # Normal move
+        from_square = idx // 64
+        to_square = idx % 64
+        move_uci = chess.square_name(from_square) + chess.square_name(to_square)
     
     return move_uci
 
