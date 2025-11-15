@@ -36,18 +36,19 @@ data_volume = modal.Volume.from_name("checkmate-training-data", create_if_missin
 @app.function(
     image=image,
     gpu="T4",  # Use T4 GPU for training
-    timeout=7200,  # 2 hour timeout (increased for large dataset)
+    timeout=86400,  # 24 hour timeout
     volumes={
         "/models": volume,
         "/data": data_volume,
     },
 )
-def train_model(data_path: str = None):
+def train_model(data_path: str = None, resume_from_checkpoint: str = None):
     """
     Train the chess neural network.
     
     Args:
         data_path: Path to training data JSONL file (defaults to combined_elite.jsonl)
+        resume_from_checkpoint: Path to checkpoint to resume from (e.g., "/models/checkpoints/checkpoint_epoch_5.pt")
     """
     import torch
     import torch.nn as nn
@@ -314,6 +315,28 @@ def train_model(data_path: str = None):
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    best_loss = float('inf')
+    
+    if resume_from_checkpoint:
+        import os
+        if os.path.exists(resume_from_checkpoint):
+            print(f"\n[RESUMING] Loading checkpoint from {resume_from_checkpoint}")
+            checkpoint = torch.load(resume_from_checkpoint, map_location=device)
+            
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
+            best_loss = checkpoint.get('loss', float('inf'))
+            
+            print(f"[RESUMING] ✓ Resumed from epoch {start_epoch}")
+            print(f"[RESUMING] Previous loss: {checkpoint.get('loss', 'N/A')}")
+            print(f"[RESUMING] Will train epochs {start_epoch + 1} to {EPOCHS}")
+        else:
+            print(f"\n[WARNING] Checkpoint not found at {resume_from_checkpoint}")
+            print("[WARNING] Starting from scratch")
+    
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     print("\n[3/5] Training...")
@@ -322,9 +345,7 @@ def train_model(data_path: str = None):
     import os
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     
-    best_loss = float('inf')
-    
-    for epoch in range(EPOCHS):
+    for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_loss = 0.0
         policy_loss_sum = 0.0
@@ -605,7 +626,8 @@ def main(
     data_path: str = None, 
     download: bool = False,
     push_to_hf: bool = False,
-    hf_repo: str = None
+    hf_repo: str = None,
+    resume_from: int = None
 ):
     """
     Main entrypoint for training.
@@ -613,6 +635,9 @@ def main(
     Usage:
         # Train with default dataset (8.1M examples)
         modal run training/train.py
+        
+        # Resume from epoch 5 checkpoint
+        modal run training/train.py --resume-from 5
         
         # Train with custom data
         modal run training/train.py --data-path /path/to/data.jsonl
@@ -652,8 +677,14 @@ def main(
         print("Starting training on Modal...")
         print(f"Training with 8.1M chess positions from combined_elite.jsonl")
         
+        # Determine checkpoint path if resuming
+        checkpoint_path = None
+        if resume_from:
+            checkpoint_path = f"/models/checkpoints/checkpoint_epoch_{resume_from}.pt"
+            print(f"Will resume from checkpoint: {checkpoint_path}")
+        
         # Train the model
-        result = train_model.remote(data_path=data_path)
+        result = train_model.remote(data_path=data_path, resume_from_checkpoint=checkpoint_path)
         print(f"\nTraining results: {result}")
         
         # Automatically push to HuggingFace after training
