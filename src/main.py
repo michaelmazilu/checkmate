@@ -11,33 +11,47 @@ from pathlib import Path
 # ============================================================================
 
 # Configuration
-LOCAL_MODEL_PATH = Path(__file__).parent.parent / "training" / "checkmate_model.pt"
+HF_REPO_ID = "raf-fonseca/checkmate-chess"
+HF_MODEL_FILENAME = "checkmate_model.pt"
 
-# Try to load the trained model
+# Try to load the trained model from Hugging Face
 USE_TRAINED_MODEL = False
 model = None
 
-print(f"[STARTUP] Loading model from local checkpoint: {LOCAL_MODEL_PATH}")
+print(f"[STARTUP] 🤗 Loading model from Hugging Face: {HF_REPO_ID}")
+print(f"[STARTUP] 📦 Model file: {HF_MODEL_FILENAME}")
+
 try:
     import sys
+    from huggingface_hub import hf_hub_download
     
-    # Check if model exists
-    if not LOCAL_MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found at {LOCAL_MODEL_PATH}")
+    print(f"[STARTUP] 🔄 Downloading model from Hugging Face...")
+    print(f"[STARTUP] Repository: https://huggingface.co/{HF_REPO_ID}")
     
-    print(f"[STARTUP] ✓ Model file found")
+    # Download model from Hugging Face (will use cached version if already downloaded)
+    model_path = hf_hub_download(
+        repo_id=HF_REPO_ID,
+        filename=HF_MODEL_FILENAME,
+        cache_dir=Path(__file__).parent.parent / ".model_cache"
+    )
+    
+    print(f"[STARTUP] ✓ Model downloaded/loaded from Hugging Face!")
+    print(f"[STARTUP] 📂 Cached at: {model_path}")
     
     # Load inference module
     sys.path.insert(0, str(Path(__file__).parent.parent / "training"))
     from inference import ChessModelInference
     
-    # Initialize model
-    model = ChessModelInference(str(LOCAL_MODEL_PATH), device="cpu")
+    # Initialize model with the HF downloaded path
+    print(f"[STARTUP] 🧠 Initializing neural network...")
+    model = ChessModelInference(model_path, device="cpu")
     USE_TRAINED_MODEL = True
-    print(f"[STARTUP] ✓ Model loaded successfully from checkpoint!")
+    print(f"[STARTUP] ✓ Model loaded successfully from Hugging Face checkpoint!")
+    print(f"[STARTUP] 🚀 Ready to play with trained model!")
     
 except Exception as e:
-    print(f"[STARTUP] ⚠ Failed to load model: {e}")
+    print(f"[STARTUP] ⚠ Failed to load model from Hugging Face: {e}")
+    print(f"[STARTUP] Error type: {type(e).__name__}")
     print("[STARTUP] Falling back to hardcoded neural network")
     print("[STARTUP] Using uniform priors (P={}) and neutral value (V=0)")
     USE_TRAINED_MODEL = False
