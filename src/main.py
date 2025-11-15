@@ -11,7 +11,7 @@ from pathlib import Path
 # ============================================================================
 
 # Configuration
-LOCAL_MODEL_PATH = Path(__file__).parent.parent / "training" / "checkpoint_epoch_2.pt"
+LOCAL_MODEL_PATH = Path(__file__).parent.parent / "training" / "checkpoint_epoch_8.pt"
 
 # Try to load the trained model
 USE_TRAINED_MODEL = False
