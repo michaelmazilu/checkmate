@@ -3,13 +3,11 @@ __pycache__
 venv
 .env.local
 .env
-devtools
 combined_elite.jsonl
 .model_cache/
-blobs
-snapshots
-locks
-refs
 combined_stockfish.pgn
 stockfish_training.jsonl
 *.pt
+node_modules/
+.next
+public/

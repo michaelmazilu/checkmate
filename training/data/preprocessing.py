@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import IO, Dict, Optional
 
+import chess
+import chess.pgn
 
 RESULT_TO_VALUE: Dict[str, int] = {
     "1-0": 1,
