@@ -86,12 +86,27 @@ def neural_net(board_fen: str):
 
 @chess_manager.entrypoint
 def test_func(ctx: GameContext):
-    """Main inference function. Uses MCTS to select the best move."""
+    """
+    Main inference function. Uses MCTS to select the best move.
+    
+    MCTS Configuration for handling unexpected/random moves:
+    - num_simulations: More simulations = more robust to surprises
+    - c_puct: Higher = more exploration (1.5 recommended for diverse opponents)
+    - dirichlet_noise: Adds exploration at root (AlphaZero trick)
+    """
     print("Running MCTS search...")
     start_time = time.time()
     
-    # Initialize MCTS and run search
-    mcts = MCTS(ctx.board, neural_net, num_simulations=2000, c_puct=1.0)
+    # Initialize MCTS with exploration enhancements
+    # These parameters make the engine robust to random/unexpected moves
+    mcts = MCTS(
+        ctx.board, 
+        neural_net, 
+        num_simulations=2000,      # Increase to 3000-4000 for even stronger play
+        c_puct=1.5,                # Higher than 1.0 = more exploration
+        dirichlet_alpha=0.3,       # Chess-specific noise parameter
+        dirichlet_epsilon=0.25     # 25% exploration noise at root
+    )
     mcts.search()
     
     elapsed = time.time() - start_time

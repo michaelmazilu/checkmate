@@ -1,5 +1,6 @@
 import random
 import math
+import numpy as np
 
 
 class MCTSNode:
@@ -57,9 +58,24 @@ class MCTSNode:
 
 
 class MCTS:
-    """Monte Carlo Tree Search implementation."""
+    """
+    Monte Carlo Tree Search implementation with exploration enhancements.
     
-    def __init__(self, board, neural_net_fn, num_simulations=4000, c_puct=1):
+    Key features for handling unexpected/random moves:
+    - Dirichlet noise at root for exploration
+    - Adjustable exploration constants
+    - Robust to off-policy positions
+    """
+    
+    def __init__(
+        self, 
+        board, 
+        neural_net_fn, 
+        num_simulations=4000, 
+        c_puct=1.5,  # Increased default for more exploration
+        dirichlet_alpha=0.3,  # Controls exploration noise
+        dirichlet_epsilon=0.25  # Mix 25% noise with NN priors at root
+    ):
         """
         Initialize MCTS search.
         
@@ -67,17 +83,57 @@ class MCTS:
             board: chess.Board object representing current position
             neural_net_fn: Function that takes FEN string and returns (P, V)
             num_simulations: Number of MCTS simulations to run
-            c_puct: Exploration constant for UCB
+            c_puct: Exploration constant for UCB (higher = more exploration)
+            dirichlet_alpha: Alpha parameter for Dirichlet noise (0.3 for chess)
+            dirichlet_epsilon: How much noise to mix at root (0.25 = 25% noise, 75% NN)
         """
         self.root = MCTSNode(board)
         self.neural_net_fn = neural_net_fn
         self.num_simulations = num_simulations
         self.c_puct = c_puct
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
+        self.root_expanded = False  # Track if root has been expanded
         
     def search(self):
         """Run MCTS search for the specified number of simulations."""
         for i in range(self.num_simulations):
             self._run_simulation()
+            
+            # Apply Dirichlet noise to root after first expansion
+            if not self.root_expanded and self.root.children:
+                self._add_dirichlet_noise_to_root()
+                self.root_expanded = True
+    
+    def _add_dirichlet_noise_to_root(self):
+        """
+        Add Dirichlet noise to root node policy priors for exploration.
+        
+        This is the AlphaZero trick for handling unexpected positions:
+        - Mix NN policy with random noise at the root
+        - Encourages exploration of all moves, even "weird" ones
+        - Helps find refutations to unexpected opponent moves
+        
+        Formula: P'(a) = (1-ε)*P(a) + ε*η(a)
+        where η ~ Dirichlet(α)
+        """
+        if not self.root.children:
+            return
+        
+        moves = list(self.root.children.keys())
+        num_moves = len(moves)
+        
+        # Generate Dirichlet noise
+        noise = np.random.dirichlet([self.dirichlet_alpha] * num_moves)
+        
+        # Mix noise with existing priors
+        for i, move in enumerate(moves):
+            child = self.root.children[move]
+            # Blend: 75% NN policy + 25% random exploration
+            child.policy_prior = (
+                (1 - self.dirichlet_epsilon) * child.policy_prior +
+                self.dirichlet_epsilon * noise[i]
+            )
     
     def _run_simulation(self):
         """
