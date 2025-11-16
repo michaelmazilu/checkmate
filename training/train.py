@@ -21,13 +21,14 @@ image = (
 volume = modal.Volume.from_name("checkmate-models", create_if_missing=True)
 
 # Configuration
-BATCH_SIZE = 512  # Increased for efficiency with large dataset
-LEARNING_RATE = 0.001  # Original LR - just continuing training with more data
+BATCH_SIZE = 2048  # Increased significantly for speed (A10G has 24GB VRAM)
+LEARNING_RATE = 0.0005  # Adjusted for larger batch: 0.001 / sqrt(4) = 0.0005
 EPOCHS = 30  # Extended for Stockfish dataset training
 HIDDEN_DIM = 512
 MODEL_PATH = "/models/checkmate_model.pt"
 CHECKPOINT_DIR = "/models/checkpoints"
 HF_REPO_ID = "raf-fonseca/checkmate-chess"  # Your HuggingFace repo
+USE_MIXED_PRECISION = True  # Enable FP16 training for 2-3x speed boost
 
 # Memory optimization
 USE_STREAMING = False  # Set to True to use disk streaming instead of loading all data into RAM
@@ -380,7 +381,9 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=0  # Keep 0 for streaming mode
+        num_workers=8,  # Parallel data loading for speed
+        pin_memory=True,  # Faster GPU transfer
+        persistent_workers=True  # Keep workers alive between epochs
     )
     
     print(f"Created DataLoader with batch_size={BATCH_SIZE}")
@@ -403,6 +406,11 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
     
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    
+    # Mixed precision training setup
+    scaler = torch.cuda.amp.GradScaler(enabled=USE_MIXED_PRECISION)
+    if USE_MIXED_PRECISION:
+        print("✓ Mixed precision training enabled (FP16)")
     
     # Resume from checkpoint if specified
     start_epoch = 0
@@ -447,28 +455,30 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         
         try:
             for batch_idx, (boards, moves, values) in enumerate(progress_bar):
-                boards = boards.to(device)
-                moves = moves.squeeze(1).to(device)
-                values = values.to(device)
+                boards = boards.to(device, non_blocking=True)
+                moves = moves.squeeze(1).to(device, non_blocking=True)
+                values = values.to(device, non_blocking=True)
                 
-                # Forward pass
-                policy_logits, value_pred = model(boards)
-                
-                # CRITICAL: Validate move indices before loss computation
-                invalid_moves = moves >= 4672
-                if invalid_moves.any():
-                    print(f"\n❌ INVALID MOVE INDICES DETECTED at epoch {epoch+1}, batch {batch_idx}")
-                    print(f"Invalid moves: {moves[invalid_moves].tolist()}")
-                    print(f"Max index: {moves.max().item()}, Min index: {moves.min().item()}")
-                    # Skip this batch
-                    continue
-                
-                # Calculate losses
-                policy_loss = policy_criterion(policy_logits, moves)
-                value_loss = value_criterion(value_pred, values)
-                
-                # Combined loss (you can adjust the weighting)
-                loss = policy_loss + value_loss
+                # Mixed precision forward pass
+                with torch.cuda.amp.autocast(enabled=USE_MIXED_PRECISION):
+                    # Forward pass
+                    policy_logits, value_pred = model(boards)
+                    
+                    # CRITICAL: Validate move indices before loss computation
+                    invalid_moves = moves >= 4672
+                    if invalid_moves.any():
+                        print(f"\n❌ INVALID MOVE INDICES DETECTED at epoch {epoch+1}, batch {batch_idx}")
+                        print(f"Invalid moves: {moves[invalid_moves].tolist()}")
+                        print(f"Max index: {moves.max().item()}, Min index: {moves.min().item()}")
+                        # Skip this batch
+                        continue
+                    
+                    # Calculate losses
+                    policy_loss = policy_criterion(policy_logits, moves)
+                    value_loss = value_criterion(value_pred, values)
+                    
+                    # Combined loss (you can adjust the weighting)
+                    loss = policy_loss + value_loss
                 
                 # Check for NaN
                 if torch.isnan(loss):
@@ -476,10 +486,16 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
                     print(f"Policy loss: {policy_loss.item()}, Value loss: {value_loss.item()}")
                     raise ValueError("NaN loss detected")
                 
-                # Backward pass
+                # Mixed precision backward pass
                 optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                scaler.scale(loss).backward()
+                
+                # Gradient clipping for stability
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                scaler.step(optimizer)
+                scaler.update()
                 
                 # Track metrics
                 total_loss += loss.item()
