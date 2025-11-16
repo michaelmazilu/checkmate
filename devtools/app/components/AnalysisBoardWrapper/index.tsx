@@ -34,6 +34,8 @@ export default function AnalysisBoardWrapper() {
   const [blackTime, setBlackTime] = useState(10 * 60 * 1000);
   const [isRunning, setIsRunning] = useState(false);
   const [currentTurn, setCurrentTurn] = useState<"white" | "black">("white");
+  const [playerColor, setPlayerColor] = useState<"white" | "black">("white");
+  const [gameStarted, setGameStarted] = useState(false);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -132,6 +134,7 @@ export default function AnalysisBoardWrapper() {
     (result: { outcome?: string; reason?: string } | null) => {
       if (!result) return;
       setIsRunning(false); // Stop timer on game end
+      setGameStarted(false); // Reset game started state
       setGameResult({
         outcome: result.outcome === "win" ? "win" : "lose",
         reason: result.reason || "checkmate",
@@ -146,6 +149,92 @@ export default function AnalysisBoardWrapper() {
       window.location.reload();
     }
   }, []);
+
+  const handleFlipBoard = useCallback(() => {
+    if (isRunning || gameStarted) return; // Can't flip during a game
+
+    // Toggle player color
+    const newPlayerColor = playerColor === "white" ? "black" : "white";
+    setPlayerColor(newPlayerColor);
+
+    // Update turn based on who starts
+    setCurrentTurn(newPlayerColor === "white" ? "white" : "black");
+
+    // Reinitialize the board with new player color
+    if (boardInitialized) {
+      setBoardInitialized(false);
+      setTimeout(() => {
+        setBoardInitialized(true);
+      }, 100);
+    }
+  }, [isRunning, gameStarted, playerColor, boardInitialized]);
+
+  const handleStartGame = useCallback(async () => {
+    setGameStarted(true);
+
+    // If player is black, trigger bot's first move
+    if (playerColor === "black" && chessInstanceRef.current) {
+      setIsRunning(true);
+      setCurrentTurn("white"); // Bot is white, starts first
+
+      // Small delay to ensure board is ready
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      try {
+        // Get starting PGN - use minimal valid PGN for starting position
+        let pgn = chessInstanceRef.current.getGamePGN?.() || "";
+
+        // If empty, create a minimal valid PGN for the starting position
+        if (!pgn || pgn.trim() === "") {
+          pgn = `[Event "Game"]
+[Site "?"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Bot"]
+[Black "You"]
+[Result "*"]
+
+*`;
+        }
+
+        const timeleft = timeControl * 60 * 1000;
+
+        console.log("Requesting bot's opening move...");
+
+        // Request bot move from API
+        const res = await fetch("/api/bot", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ pgn, timeleft }),
+        });
+
+        if (!res.ok) {
+          console.error("Bot API error:", res.status);
+          return;
+        }
+
+        const data = await res.json();
+        if (!data || !data.move) {
+          console.error("No move returned from bot");
+          return;
+        }
+
+        console.log("Bot opening move:", data.move);
+
+        // Apply the bot's move
+        if (chessInstanceRef.current.playUciMove) {
+          chessInstanceRef.current.playUciMove(data.move);
+        }
+
+        // Switch to black's turn (player's turn)
+        setCurrentTurn("black");
+      } catch (error) {
+        console.error("Error getting bot move:", error);
+      }
+    }
+  }, [playerColor, timeControl]);
 
   // Format time as MM:SS
   const formatTime = useCallback((ms: number): string => {
@@ -162,6 +251,7 @@ export default function AnalysisBoardWrapper() {
     setWhiteTime(timeInMs);
     setBlackTime(timeInMs);
     setIsRunning(false);
+    setGameStarted(false);
     setCurrentTurn("white");
 
     // Stop any running timer
@@ -208,7 +298,7 @@ export default function AnalysisBoardWrapper() {
 
   // Force clock display update to prevent external JS from overwriting
   useEffect(() => {
-    if (!isRunning) return;
+    if (!gameStarted) return;
 
     const updateClockDisplays = () => {
       const blackClockTime = document.querySelector("#black-clock .clock-time");
@@ -258,23 +348,23 @@ export default function AnalysisBoardWrapper() {
     return () => {
       observer.disconnect();
     };
-  }, [isRunning, whiteTime, blackTime, formatTime]);
+  }, [gameStarted, whiteTime, blackTime, formatTime]);
 
   const initializeAnalysisBoard = useCallback(async () => {
     try {
       const gameDataForAnalysis = {
         pgn: "",
         white: {
-          name: "You",
+          name: playerColor === "white" ? "You" : "Bot",
           elo: "N/A",
         },
         black: {
-          name: "Bot",
+          name: playerColor === "black" ? "You" : "Bot",
           elo: "N/A",
         },
         mode: "play-vs-bot",
         timeleft: timeControl * 60 * 1000, // Use selected time control
-        playerColor: "white",
+        playerColor: playerColor,
         onGameEnd: handleGameResult,
       };
 
@@ -301,7 +391,8 @@ export default function AnalysisBoardWrapper() {
           instance.chess.move = function (...args: any[]) {
             const result = originalPush(...args);
             if (result) {
-              // Start timer on first move
+              // Only start timer if game has been started with the Start button
+              setGameStarted(true);
               setIsRunning(true);
               // Switch turns
               setCurrentTurn((prev) => (prev === "white" ? "black" : "white"));
@@ -315,7 +406,7 @@ export default function AnalysisBoardWrapper() {
     } catch (error) {
       console.error("Failed to initialize analysis board:", error);
     }
-  }, [handleGameResult, timeControl]);
+  }, [handleGameResult, timeControl, playerColor]);
 
   useEffect(() => {
     // init
@@ -435,11 +526,76 @@ export default function AnalysisBoardWrapper() {
             color: var(--foreground);
           }
 
+          .flip-button {
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.7;
+            transition: opacity 0.2s ease;
+          }
+
+          .flip-button:hover {
+            opacity: 1;
+          }
+
+          .flip-button svg {
+            width: 16px;
+            height: 16px;
+          }
+
+          .start-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 100;
+            border-radius: 4px;
+          }
+
+          .start-button {
+            background: #5a6b7a;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+          }
+
+          .start-button:hover {
+            background: #6a7b8a;
+            transform: translateY(-1px);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
+          }
+
+          .start-button:active {
+            transform: translateY(0);
+          }
+
           @media (max-width: 768px) {
             .clock-selector {
               font-size: 14px;
               padding: 3px 6px;
               letter-spacing: normal;
+            }
+
+            .start-button {
+              padding: 8px 20px;
+              font-size: 13px;
             }
           }
         `}</style>
@@ -474,39 +630,64 @@ export default function AnalysisBoardWrapper() {
                   <div className="nameplate top">
                     <div className="profile">
                       <h4 id="black-name" className="name">
-                        Black
+                        {playerColor === "white" ? "Bot" : "You"}
                       </h4>
                     </div>
                     <div
-                      className={`clock clock-with-selector ${
-                        currentTurn === "black" && isRunning ? "active" : ""
-                      }`}
-                      id="black-clock"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                      }}
                     >
-                      {!isRunning ? (
-                        <select
-                          value={timeControl}
-                          onChange={(e) =>
-                            handleTimeControlChange(
-                              Number(e.target.value) as TimeControl
-                            )
-                          }
-                          className="clock-selector"
+                      {!gameStarted && (
+                        <button
+                          onClick={handleFlipBoard}
+                          className="flip-button"
+                          title="Flip board - play as black"
                         >
-                          <option value={10}>10:00</option>
-                          <option value={5}>5:00</option>
-                          <option value={3}>3:00</option>
-                          <option value={1}>1:00</option>
-                        </select>
-                      ) : (
-                        <span className="clock-time">
-                          {formatTime(blackTime)}
-                        </span>
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 512 512"
+                            width="16"
+                            height="16"
+                            fill="currentColor"
+                          >
+                            <path d="M105.1 202.6c7.7-21.8 20.2-42.3 37.8-59.8c62.5-62.5 163.8-62.5 226.3 0L386.3 160H352c-17.7 0-32 14.3-32 32s14.3 32 32 32H463.5c0 0 0 0 0 0h.4c17.7 0 32-14.3 32-32V80c0-17.7-14.3-32-32-32s-32 14.3-32 32v35.2L414.4 97.6c-87.5-87.5-229.3-87.5-316.8 0C73.2 122 55.6 150.7 44.8 181.4c-5.9 16.7 2.9 34.9 19.5 40.8s34.9-2.9 40.8-19.5zM39 289.3c-5 1.5-9.8 4.2-13.7 8.2c-4 4-6.7 8.8-8.1 14c-.3 1.2-.6 2.5-.8 3.8c-.3 1.7-.4 3.4-.4 5.1V448c0 17.7 14.3 32 32 32s32-14.3 32-32V413.3l17.6 17.5 0 0c87.5 87.4 229.3 87.4 316.7 0c24.4-24.4 42.1-53.1 52.9-83.7c5.9-16.7-2.9-34.9-19.5-40.8s-34.9 2.9-40.8 19.5c-7.7 21.8-20.2 42.3-37.8 59.8c-62.5 62.5-163.8 62.5-226.3 0L125.7 352H160c17.7 0 32-14.3 32-32s-14.3-32-32-32H48.4c-2.2 0-4.2 .9-5.6 2.3c-1.5 1.4-2.4 3.3-2.5 5.4c0 .5 0 1.1 .1 1.6z" />
+                          </svg>
+                        </button>
                       )}
+                      <div
+                        className={`clock clock-with-selector ${
+                          currentTurn === "black" && isRunning ? "active" : ""
+                        }`}
+                        id="black-clock"
+                      >
+                        {!gameStarted ? (
+                          <select
+                            value={timeControl}
+                            onChange={(e) =>
+                              handleTimeControlChange(
+                                Number(e.target.value) as TimeControl
+                              )
+                            }
+                            className="clock-selector"
+                          >
+                            <option value={10}>10:00</option>
+                            <option value={5}>5:00</option>
+                            <option value={3}>3:00</option>
+                            <option value={1}>1:00</option>
+                          </select>
+                        ) : (
+                          <span className="clock-time">
+                            {formatTime(blackTime)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="chess-box">
+                  <div className="chess-box" style={{ position: "relative" }}>
                     <div className="eval-bar-container">
                       <div className="eval-bar">
                         <div className="eval-text"></div>
@@ -514,12 +695,24 @@ export default function AnalysisBoardWrapper() {
                       </div>
                     </div>
                     <div id="chessboard"></div>
+
+                    {/* Start Game Overlay - Only show when bot plays as White */}
+                    {!gameStarted && playerColor === "black" && (
+                      <div className="start-overlay">
+                        <button
+                          className="start-button"
+                          onClick={handleStartGame}
+                        >
+                          Start Game
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="nameplate bottom">
                     <div className="profile">
                       <h4 id="white-name" className="name">
-                        White
+                        {playerColor === "white" ? "You" : "Bot"}
                       </h4>
                     </div>
                     <div
@@ -528,7 +721,7 @@ export default function AnalysisBoardWrapper() {
                       }`}
                       id="white-clock"
                     >
-                      {!isRunning ? (
+                      {!gameStarted ? (
                         <select
                           value={timeControl}
                           onChange={(e) =>
