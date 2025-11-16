@@ -98,27 +98,27 @@ def test_func(ctx: GameContext):
     # timeLeft is in milliseconds
     time_left_seconds = ctx.timeLeft / 1000.0
     
-    # Estimate moves remaining (conservative estimate)
-    # Games are typically 40-80 moves, so estimate conservatively
+    # Estimate moves remaining (very conservative estimate for safety)
+    # Games are typically 40-80 moves, but estimate conservatively to avoid timeouts
     # If we have lots of time, assume more moves left; if little time, assume fewer
     if time_left_seconds > 40:
-        estimated_moves_remaining = 50  # Early game, many moves left
+        estimated_moves_remaining = 60  # Early game, be very conservative
     elif time_left_seconds > 20:
-        estimated_moves_remaining = 35  # Mid game
+        estimated_moves_remaining = 40  # Mid game, conservative
     else:
-        estimated_moves_remaining = 20  # Late game, fewer moves left
+        estimated_moves_remaining = 25  # Late game, still conservative
     
-    # Allocate time per move: use most of available time, but keep safety margin
-    # Target: use ~80% of available time, leaving 20% safety margin
-    # Per move: (time_left * 0.8) / estimated_moves
-    time_per_move = (time_left_seconds * 0.8) / estimated_moves_remaining
+    # Allocate time per move: use less of available time for larger safety margin
+    # Target: use ~65% of available time, leaving 35% safety margin
+    # Per move: (time_left * 0.65) / estimated_moves
+    time_per_move = (time_left_seconds * 0.65) / estimated_moves_remaining
     
-    # Clamp between 0.3s (minimum) and 1.2s (maximum per move)
-    # This ensures we don't go too fast or too slow
-    time_per_move = max(0.3, min(1.2, time_per_move))
+    # Clamp between 0.2s (minimum) and 0.8s (maximum per move) - more conservative
+    # This ensures we don't go too fast or too slow, with better safety margin
+    time_per_move = max(0.2, min(0.8, time_per_move))
     
-    # Add small buffer for overhead (neural net calls, etc.)
-    search_time = time_per_move * 0.9  # Use 90% of allocated time for search
+    # Add buffer for overhead (neural net calls, etc.) - use 85% of allocated time
+    search_time = time_per_move * 0.85  # Use 85% of allocated time for search
     
     # Initialize MCTS with time-based search
     mcts = MCTS(
