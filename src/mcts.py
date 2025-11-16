@@ -124,15 +124,36 @@ class MCTS:
         self.root_expanded = False  # Track if root has been expanded
         self._nn_cache = {}  # Cache NN evaluations per FEN
         
-    def search(self):
-        """Run MCTS search for the specified number of simulations."""
-        for i in range(self.num_simulations):
-            self._run_simulation()
+    def search(self, max_time_seconds=None):
+        """
+        Run MCTS search.
+        
+        Args:
+            max_time_seconds: Maximum time to spend searching (None = use num_simulations)
+        """
+        if max_time_seconds is not None:
+            # Time-based search
+            import time
+            start_time = time.time()
+            simulation_count = 0
             
-            # Apply Dirichlet noise to root after first expansion (only if enabled)
-            if not self.root_expanded and self.root.children and self.dirichlet_epsilon > 0:
-                self._add_dirichlet_noise_to_root()
-                self.root_expanded = True
+            while (time.time() - start_time) < max_time_seconds:
+                self._run_simulation()
+                simulation_count += 1
+                
+                # Apply Dirichlet noise to root after first expansion (only if enabled)
+                if not self.root_expanded and self.root.children and self.dirichlet_epsilon > 0:
+                    self._add_dirichlet_noise_to_root()
+                    self.root_expanded = True
+        else:
+            # Fixed simulation count
+            for i in range(self.num_simulations):
+                self._run_simulation()
+                
+                # Apply Dirichlet noise to root after first expansion (only if enabled)
+                if not self.root_expanded and self.root.children and self.dirichlet_epsilon > 0:
+                    self._add_dirichlet_noise_to_root()
+                    self.root_expanded = True
     
     def _add_dirichlet_noise_to_root(self):
         """

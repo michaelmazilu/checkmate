@@ -43,7 +43,7 @@ data_volume = modal.Volume.from_name("checkmate-training-data", create_if_missin
 
 @app.function(
     image=image,
-    gpu="A10G",  # Upgraded to A10G GPU (24GB VRAM, faster than T4)
+    gpu="A100",  # Upgraded to A10G GPU (24GB VRAM, faster than T4)
     memory=262144,  # 128GB RAM to handle 111M examples in memory
     timeout=86400,  # 24 hour timeout
     volumes={
