@@ -19,7 +19,7 @@ class MCTSNode:
         self._legal_moves = None
         self._unexpanded_moves = None
         
-    def ucb_score(self, c_puct=0.8):
+    def ucb_score(self, c_puct=1.0):
         """
         Upper Confidence Bound score balancing exploration vs exploitation.
         
@@ -99,8 +99,8 @@ class MCTS:
         self, 
         board, 
         neural_net_fn, 
-        num_simulations=400, 
-        c_puct=0.8,  # Increased default for more exploration
+        num_simulations=100, 
+        c_puct=1.0,  # Increased default for more exploration
         dirichlet_alpha=0.3,  # Controls exploration noise
         dirichlet_epsilon=0.25  # Mix 25% noise with NN priors at root
     ):
