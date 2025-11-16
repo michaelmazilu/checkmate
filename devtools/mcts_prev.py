@@ -6,18 +6,14 @@ import numpy as np
 class MCTSNode:
     """Represents a node in the MCTS tree (a board state)."""
     
-    def __init__(self, board, parent=None, action_move=None, policy_prior=1.0, copy_board=True):
-        self.board = board.copy(stack=False) if copy_board else board
+    def __init__(self, board, parent=None, action_move=None, policy_prior=1.0):
+        self.board = board.copy()
         self.parent = parent
         self.action_move = action_move  # Move that led to this state
         self.children = {}  # Dict: move -> MCTSNode
         self.visit_count = 0
         self.value_sum = 0.0
         self.policy_prior = policy_prior  # P(a|s) from NN
-        self.fen = self.board.fen()
-        self.is_terminal = self.board.is_game_over()
-        self._legal_moves = None
-        self._unexpanded_moves = None
         
     def ucb_score(self, c_puct=1.0):
         """
@@ -54,35 +50,11 @@ class MCTSNode:
             return None
         return max(self.children.values(), key=lambda n: n.ucb_score(c_puct))
     
-    def legal_moves(self):
-        """Cache legal moves for the node to avoid recomputation."""
-        if self._legal_moves is None:
-            if self.is_terminal:
-                self._legal_moves = []
-            else:
-                self._legal_moves = list(self.board.generate_legal_moves())
-        return self._legal_moves
-
-    def legal_move_count(self):
-        """Convenience helper for len(legal_moves)."""
-        return len(self.legal_moves())
-
     def get_unexplored_moves(self):
         """Get legal moves that haven't been explored yet."""
-        if self.is_terminal:
-            return []
-        if self._unexpanded_moves is None:
-            self._unexpanded_moves = self.legal_moves().copy()
-        return self._unexpanded_moves
-
-    def mark_move_explored(self, move):
-        """Remove a move from the unexpanded list once a child is created."""
-        if self._unexpanded_moves is None:
-            return
-        try:
-            self._unexpanded_moves.remove(move)
-        except ValueError:
-            pass
+        legal_moves = list(self.board.generate_legal_moves())
+        unexplored = [m for m in legal_moves if m not in self.children]
+        return unexplored
 
 
 class MCTS:
@@ -122,7 +94,6 @@ class MCTS:
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
         self.root_expanded = False  # Track if root has been expanded
-        self._nn_cache = {}  # Cache NN evaluations per FEN
         
     def search(self):
         """Run MCTS search for the specified number of simulations."""
@@ -164,14 +135,6 @@ class MCTS:
                 self.dirichlet_epsilon * noise[i]
             )
     
-    def _evaluate_fen(self, fen):
-        """Memoize NN evaluations to avoid recomputing the same FEN."""
-        cached = self._nn_cache.get(fen)
-        if cached is None:
-            cached = self.neural_net_fn(fen)
-            self._nn_cache[fen] = cached
-        return cached
-    
     def _run_simulation(self):
         """
         Execute one MCTS simulation:
@@ -183,61 +146,62 @@ class MCTS:
         node = self.root
         
         # SELECTION: Traverse tree using UCB
-        while True:
-            unexplored_moves = node.get_unexplored_moves()
-            if unexplored_moves or not node.children or node.is_terminal:
-                break
+        while not node.get_unexplored_moves() and node.children:
             node = node.select_best_child(self.c_puct)
+            
+            # Stop if we reach a terminal position
+            if node.board.is_game_over():
+                break
         
         # EXPANSION: Create new child node if game isn't over
-        if not node.is_terminal and unexplored_moves:
-            # Get policy priors from NN for the CURRENT position (before move)
-            P, _ = self._evaluate_fen(node.fen)
-            
-            # Choose which unexplored move to expand, weighted by policy priors
-            if P and len(P) > 0:
-                # Get priors for unexplored moves
-                move_priors = {}
-                for m in unexplored_moves:
-                    # Use NN prior if available, else small default value
-                    move_priors[m] = P.get(m, 1e-8)
+        if not node.board.is_game_over():
+            unexplored_moves = node.get_unexplored_moves()
+            if unexplored_moves:
+                # Get policy priors from NN for the CURRENT position (before move)
+                P, _ = self.neural_net_fn(node.board.fen())
                 
-                # Normalize to get selection probabilities
-                total_prior = sum(move_priors.values())
-                if total_prior > 0:
-                    weights = [move_priors[m] / total_prior for m in unexplored_moves]
-                    move = random.choices(unexplored_moves, weights=weights, k=1)[0]
-                    policy_prior = move_priors[move]
+                # Choose which unexplored move to expand, weighted by policy priors
+                if P and len(P) > 0:
+                    # Get priors for unexplored moves
+                    move_priors = {}
+                    for m in unexplored_moves:
+                        # Use NN prior if available, else small default value
+                        move_priors[m] = P.get(m, 1e-8)
+                    
+                    # Normalize to get selection probabilities
+                    total_prior = sum(move_priors.values())
+                    if total_prior > 0:
+                        weights = [move_priors[m] / total_prior for m in unexplored_moves]
+                        move = random.choices(unexplored_moves, weights=weights, k=1)[0]
+                        policy_prior = move_priors[move]
+                    else:
+                        # Fallback to uniform if all priors are zero
+                        move = random.choice(unexplored_moves)
+                        policy_prior = 1.0 / len(list(node.board.generate_legal_moves()))
                 else:
-                    # Fallback to uniform if all priors are zero
+                    # Fallback to uniform if NN returns no policy
                     move = random.choice(unexplored_moves)
-                    policy_prior = 1.0 / max(node.legal_move_count(), 1)
-            else:
-                # Fallback to uniform if NN returns no policy
-                move = random.choice(unexplored_moves)
-                policy_prior = 1.0 / max(node.legal_move_count(), 1)
-            
-            # Create new board state
-            new_board = node.board.copy(stack=False)
-            new_board.push(move)
-            
-            # Create new node with policy prior from NN
-            child_node = MCTSNode(
-                new_board, 
-                parent=node, 
-                action_move=move,
-                policy_prior=policy_prior,
-                copy_board=False
-            )
-            node.children[move] = child_node
-            node.mark_move_explored(move)
-            node = child_node
+                    policy_prior = 1.0 / len(list(node.board.generate_legal_moves()))
+                
+                # Create new board state
+                new_board = node.board.copy()
+                new_board.push(move)
+                
+                # Create new node with policy prior from NN
+                child_node = MCTSNode(
+                    new_board, 
+                    parent=node, 
+                    action_move=move,
+                    policy_prior=policy_prior
+                )
+                node.children[move] = child_node
+                node = child_node
         
         # EVALUATION: Get value estimate from NN
-        if node.is_terminal:
+        if node.board.is_game_over():
             value = self._get_terminal_value(node.board)
         else:
-            _, value = self._evaluate_fen(node.fen)
+            _, value = self.neural_net_fn(node.board.fen())
         
         # BACKPROPAGATION: Update statistics up the tree
         self._backpropagation(node, value)
@@ -300,3 +264,4 @@ class MCTS:
             probabilities[move] = prob
         
         return probabilities
+

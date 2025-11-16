@@ -11,3 +11,4 @@ stockfish_training.jsonl
 node_modules/
 .next
 public/
+.pycache/
