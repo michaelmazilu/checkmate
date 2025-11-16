@@ -6,13 +6,15 @@ import { Figtree } from "next/font/google";
 
 const figtree = Figtree({
   subsets: ["latin"],
-  weight: ["600", "700"]
+  weight: ["600", "700"],
 });
+
+type TimeControl = 1 | 3 | 5 | 10;
 
 export default function AnalysisBoardWrapper() {
   const [scriptsLoaded, setScriptsLoaded] = useState({
     jquery: false,
-    analysis: false
+    analysis: false,
   });
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const chessInstanceRef = useRef<any>(null);
@@ -25,6 +27,14 @@ export default function AnalysisBoardWrapper() {
     reason: string;
   } | null>(null);
   const lastRestartAtRef = useRef<number | null>(null);
+
+  // Timer states
+  const [timeControl, setTimeControl] = useState<TimeControl>(10);
+  const [whiteTime, setWhiteTime] = useState(10 * 60 * 1000); // 10 minutes in ms
+  const [blackTime, setBlackTime] = useState(10 * 60 * 1000);
+  const [isRunning, setIsRunning] = useState(false);
+  const [currentTurn, setCurrentTurn] = useState<"white" | "black">("white");
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -121,9 +131,10 @@ export default function AnalysisBoardWrapper() {
   const handleGameResult = useCallback(
     (result: { outcome?: string; reason?: string } | null) => {
       if (!result) return;
+      setIsRunning(false); // Stop timer on game end
       setGameResult({
         outcome: result.outcome === "win" ? "win" : "lose",
-        reason: result.reason || "checkmate"
+        reason: result.reason || "checkmate",
       });
     },
     []
@@ -136,26 +147,139 @@ export default function AnalysisBoardWrapper() {
     }
   }, []);
 
+  // Format time as MM:SS
+  const formatTime = useCallback((ms: number): string => {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  }, []);
+
+  // Handle time control change
+  const handleTimeControlChange = useCallback((minutes: TimeControl) => {
+    setTimeControl(minutes);
+    const timeInMs = minutes * 60 * 1000;
+    setWhiteTime(timeInMs);
+    setBlackTime(timeInMs);
+    setIsRunning(false);
+    setCurrentTurn("white");
+
+    // Stop any running timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+  }, []);
+
+  // Timer countdown effect
+  useEffect(() => {
+    if (!isRunning) return;
+
+    timerIntervalRef.current = setInterval(() => {
+      if (currentTurn === "white") {
+        setWhiteTime((prev) => {
+          const newTime = prev - 100;
+          if (newTime <= 0) {
+            setIsRunning(false);
+            setGameResult({ outcome: "lose", reason: "timeout" });
+            return 0;
+          }
+          return newTime;
+        });
+      } else {
+        setBlackTime((prev) => {
+          const newTime = prev - 100;
+          if (newTime <= 0) {
+            setIsRunning(false);
+            setGameResult({ outcome: "win", reason: "timeout" });
+            return 0;
+          }
+          return newTime;
+        });
+      }
+    }, 100);
+
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+    };
+  }, [isRunning, currentTurn]);
+
+  // Force clock display update to prevent external JS from overwriting
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const updateClockDisplays = () => {
+      const blackClockTime = document.querySelector("#black-clock .clock-time");
+      const whiteClockTime = document.querySelector("#white-clock .clock-time");
+
+      if (
+        blackClockTime &&
+        blackClockTime.textContent !== formatTime(blackTime)
+      ) {
+        blackClockTime.textContent = formatTime(blackTime);
+      }
+      if (
+        whiteClockTime &&
+        whiteClockTime.textContent !== formatTime(whiteTime)
+      ) {
+        whiteClockTime.textContent = formatTime(whiteTime);
+      }
+    };
+
+    // Update immediately
+    updateClockDisplays();
+
+    // Use MutationObserver to catch and immediately fix any external changes
+    const observer = new MutationObserver(() => {
+      updateClockDisplays();
+    });
+
+    // Observe both clock containers for any changes
+    const blackClock = document.getElementById("black-clock");
+    const whiteClock = document.getElementById("white-clock");
+
+    if (blackClock) {
+      observer.observe(blackClock, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+    if (whiteClock) {
+      observer.observe(whiteClock, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [isRunning, whiteTime, blackTime, formatTime]);
+
   const initializeAnalysisBoard = useCallback(async () => {
     try {
       const gameDataForAnalysis = {
         pgn: "",
         white: {
           name: "You",
-          elo: "N/A"
+          elo: "N/A",
         },
         black: {
           name: "Bot",
-          elo: "N/A"
+          elo: "N/A",
         },
         mode: "play-vs-bot",
-        timeleft: 60000,
+        timeleft: timeControl * 60 * 1000, // Use selected time control
         playerColor: "white",
-        onGameEnd: handleGameResult
+        onGameEnd: handleGameResult,
       };
 
       console.log("AnalysisBoardWrapper: initializing board", {
-        playerColor: gameDataForAnalysis.playerColor
+        playerColor: gameDataForAnalysis.playerColor,
       });
 
       (window as any).gameDataForAnalysis = gameDataForAnalysis;
@@ -170,13 +294,28 @@ export default function AnalysisBoardWrapper() {
           gameDataForAnalysis
         );
         chessInstanceRef.current = instance;
+
+        // Set up move listener to handle timer
+        if (instance?.chess) {
+          const originalPush = instance.chess.move.bind(instance.chess);
+          instance.chess.move = function (...args: any[]) {
+            const result = originalPush(...args);
+            if (result) {
+              // Start timer on first move
+              setIsRunning(true);
+              // Switch turns
+              setCurrentTurn((prev) => (prev === "white" ? "black" : "white"));
+            }
+            return result;
+          };
+        }
       } else {
         console.error("initAnalysisBoard function not found on window");
       }
     } catch (error) {
       console.error("Failed to initialize analysis board:", error);
     }
-  }, [handleGameResult]);
+  }, [handleGameResult, timeControl]);
 
   useEffect(() => {
     // init
@@ -188,7 +327,7 @@ export default function AnalysisBoardWrapper() {
     scriptsLoaded.jquery,
     scriptsLoaded.analysis,
     boardInitialized,
-    initializeAnalysisBoard
+    initializeAnalysisBoard,
   ]);
 
   useEffect(() => {
@@ -206,7 +345,7 @@ export default function AnalysisBoardWrapper() {
     console.log("User pressed manual reload button");
     try {
       await fetch("/api/reload", {
-        method: "POST"
+        method: "POST",
       });
     } catch (error) {
       console.error("Failed to reload Python server", error);
@@ -250,6 +389,61 @@ export default function AnalysisBoardWrapper() {
           type="text/css"
         />
 
+        {/* Timer styles */}
+        <style jsx>{`
+          .clock.active .clock-time,
+          .clock-with-selector.active .clock-time {
+            font-weight: 700;
+          }
+
+          /* Ensure clock-with-selector inherits all clock styles */
+          .clock-with-selector {
+            /* This will inherit the existing .clock styles from style.css */
+            /* We're just adding display flex to center the content */
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .clock-selector {
+            appearance: none;
+            font-family: "Jost", sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            background-color: var(--sidebar-inactive);
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 2px solid rgba(0, 0, 0, 0.1);
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            text-align: center;
+            min-width: 55px;
+          }
+
+          .clock-selector:hover {
+            opacity: 0.8;
+          }
+
+          .clock-selector:focus {
+            outline: none;
+            opacity: 1;
+          }
+
+          .clock-selector option {
+            background: var(--background);
+            color: var(--foreground);
+          }
+
+          @media (max-width: 768px) {
+            .clock-selector {
+              font-size: 14px;
+              padding: 3px 6px;
+              letter-spacing: normal;
+            }
+          }
+        `}</style>
+
         {/* we need jquery */}
         <Script
           src="/analysis-board/libs/jquery.3.7.1.min.js"
@@ -273,70 +467,6 @@ export default function AnalysisBoardWrapper() {
           ref={boardContainerRef}
           className="analysis-board-container dark_theme"
         >
-          <div className="mb-4 flex gap-2 items-center min-h-[1.5rem]"></div>
-          <button
-            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/20 text-[var(--foreground)] transition hover:border-white/40 hover:bg-white/5 disabled:opacity-40"
-            aria-label="Reload Python server"
-            disabled={reloading}
-            onClick={handleReloadClick}
-          >
-            {reloading ? (
-              <svg
-                className="h-3.5 w-3.5 animate-spin"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              >
-                <circle
-                  className="opacity-30"
-                  cx="12"
-                  cy="12"
-                  r="9"
-                  stroke="currentColor"
-                  strokeDasharray="56"
-                />
-                <path
-                  d="M21 12a9 9 0 0 0-9-9"
-                  strokeLinecap="round"
-                  className="opacity-80"
-                />
-              </svg>
-            ) : (
-              <svg
-                className="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              >
-                <path
-                  d="M3 4v6h6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M21 20v-6h-6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M21 8a9 9 0 0 0-15.5-3.5L3 10"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M3 16a9 9 0 0 0 15.5 3.5L21 14"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            )}
-          </button>
-          {reloadStatus && (
-            <span className="ml-2 text-xs text-green-400">{reloadStatus}</span>
-          )}
-
           <main>
             <article className="container">
               <div className="main-panel">
@@ -347,8 +477,32 @@ export default function AnalysisBoardWrapper() {
                         Black
                       </h4>
                     </div>
-                    <div className="clock" id="black-clock">
-                      <span className="clock-time">--:--</span>
+                    <div
+                      className={`clock clock-with-selector ${
+                        currentTurn === "black" && isRunning ? "active" : ""
+                      }`}
+                      id="black-clock"
+                    >
+                      {!isRunning ? (
+                        <select
+                          value={timeControl}
+                          onChange={(e) =>
+                            handleTimeControlChange(
+                              Number(e.target.value) as TimeControl
+                            )
+                          }
+                          className="clock-selector"
+                        >
+                          <option value={10}>10:00</option>
+                          <option value={5}>5:00</option>
+                          <option value={3}>3:00</option>
+                          <option value={1}>1:00</option>
+                        </select>
+                      ) : (
+                        <span className="clock-time">
+                          {formatTime(blackTime)}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -368,8 +522,32 @@ export default function AnalysisBoardWrapper() {
                         White
                       </h4>
                     </div>
-                    <div className="clock" id="white-clock">
-                      <span className="clock-time">--:--</span>
+                    <div
+                      className={`clock clock-with-selector ${
+                        currentTurn === "white" && isRunning ? "active" : ""
+                      }`}
+                      id="white-clock"
+                    >
+                      {!isRunning ? (
+                        <select
+                          value={timeControl}
+                          onChange={(e) =>
+                            handleTimeControlChange(
+                              Number(e.target.value) as TimeControl
+                            )
+                          }
+                          className="clock-selector"
+                        >
+                          <option value={10}>10:00</option>
+                          <option value={5}>5:00</option>
+                          <option value={3}>3:00</option>
+                          <option value={1}>1:00</option>
+                        </select>
+                      ) : (
+                        <span className="clock-time">
+                          {formatTime(whiteTime)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
