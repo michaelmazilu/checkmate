@@ -34,6 +34,8 @@ USE_MIXED_PRECISION = True  # Enable FP16 training for 2-3x speed boost
 USE_STREAMING = False  # Set to True to use disk streaming instead of loading all data into RAM
                        # Streaming: slower but uses minimal memory
                        # In-memory: faster but requires ~128GB RAM for 111M examples
+NUM_WORKERS = 2  # Reduced from 8 to save memory (each worker uses memory for data loading)
+                 # With persistent_workers=True, 8 workers can use 8x memory
 
 
 # Create a separate volume for training data
@@ -64,6 +66,7 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
     import chess
     import numpy as np
     from tqdm import tqdm
+    import gc  # For garbage collection
     
     print("=" * 80)
     print("CHECKMATE NEURAL NETWORK TRAINING")
@@ -381,9 +384,9 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=8,  # Parallel data loading for speed
+        num_workers=NUM_WORKERS,  # Reduced to save memory
         pin_memory=True,  # Faster GPU transfer
-        persistent_workers=True  # Keep workers alive between epochs
+        persistent_workers=True if NUM_WORKERS > 0 else False  # Only if using workers
     )
     
     print(f"Created DataLoader with batch_size={BATCH_SIZE}")
@@ -427,8 +430,14 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
             start_epoch = checkpoint['epoch']
             best_loss = checkpoint.get('loss', float('inf'))
             
+            # Free checkpoint memory
+            del checkpoint
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+            
             print(f"[RESUMING] ✓ Resumed from epoch {start_epoch}")
-            print(f"[RESUMING] Previous loss: {checkpoint.get('loss', 'N/A')}")
+            print(f"[RESUMING] Previous loss: {best_loss:.4f}")
             print(f"[RESUMING] Will train epochs {start_epoch + 1} to {EPOCHS}")
         else:
             print(f"\n[WARNING] Checkpoint not found at {resume_from_checkpoint}")
@@ -508,6 +517,14 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
                     'policy': f'{policy_loss.item():.4f}',
                     'value': f'{value_loss.item():.4f}'
                 })
+                
+                # Periodic memory cleanup (every 100 batches)
+                if (batch_idx + 1) % 100 == 0:
+                    # Clear GPU cache
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    # Force garbage collection
+                    gc.collect()
         except Exception as e:
             print(f"\n❌ Error during epoch {epoch+1}, batch {batch_idx}: {e}")
             # Save emergency checkpoint
@@ -522,6 +539,11 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
             print(f"Emergency checkpoint saved to {emergency_path}")
             volume.commit()
             raise
+        
+        # Clear memory after epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
         
         # Epoch summary
         avg_loss = total_loss / len(train_loader)
