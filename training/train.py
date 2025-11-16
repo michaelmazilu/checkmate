@@ -22,7 +22,7 @@ volume = modal.Volume.from_name("checkmate-models", create_if_missing=True)
 
 # Configuration
 BATCH_SIZE = 2048  # Increased significantly for speed (A10G has 24GB VRAM)
-LEARNING_RATE = 0.0005  # Adjusted for larger batch: 0.001 / sqrt(4) = 0.0005
+LEARNING_RATE = 0.00005  # Adjusted for larger batch: 0.001 / sqrt(4) = 0.0005
 EPOCHS = 30  # Extended for Stockfish dataset training
 HIDDEN_DIM = 512
 MODEL_PATH = "/models/checkmate_model.pt"

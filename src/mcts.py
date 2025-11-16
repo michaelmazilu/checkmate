@@ -99,7 +99,7 @@ class MCTS:
         self, 
         board, 
         neural_net_fn, 
-        num_simulations=4000, 
+        num_simulations=500, 
         c_puct=1.5,  # Increased default for more exploration
         dirichlet_alpha=0.3,  # Controls exploration noise
         dirichlet_epsilon=0.25  # Mix 25% noise with NN priors at root
