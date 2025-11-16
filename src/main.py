@@ -74,13 +74,11 @@ def neural_net(board_fen: str):
         # Use trained neural network
         board = chess.Board(board_fen)
         P, V = model.predict(board_fen, board)
-        print(f"[NN] Trained model -> P: {len(P)} moves, V: {V:.3f}")
         return P, V
     else:
         # Hardcoded fallback (uniform distribution)
         P = {}
         V = 0.0
-        print(f"[NN] Hardcoded -> P: {len(P)} moves, V: {V:.3f}")
         return P, V
 
 
@@ -94,23 +92,23 @@ def test_func(ctx: GameContext):
     - c_puct: Higher = more exploration (1.5 recommended for diverse opponents)
     - dirichlet_noise: Adds exploration at root (AlphaZero trick)
     """
-    print("Running MCTS search...")
     start_time = time.time()
     
-    # Initialize MCTS with exploration enhancements
-    # These parameters make the engine robust to random/unexpected moves
+    # Initialize MCTS optimized for speed (<1 second per move)
+    # Reduced simulations for fast response time
     mcts = MCTS(
         ctx.board, 
         neural_net, 
-        num_simulations=2000,      # Increase to 3000-4000 for even stronger play
-        c_puct=1.5,                # Higher than 1.0 = more exploration
-        dirichlet_alpha=0.3,       # Chess-specific noise parameter
-        dirichlet_epsilon=0.25     # 25% exploration noise at root
+        num_simulations=50,         # Reduced for speed (was 2000)
+        c_puct=1.0,                 # Standard exploration
+        dirichlet_alpha=0.3,        # Chess-specific noise parameter
+        dirichlet_epsilon=0.0       # Disabled for speed (was 0.25)
     )
     mcts.search()
     
     elapsed = time.time() - start_time
-    print(f"Search completed in {elapsed:.2f}s")
+    if elapsed > 1.0:
+        print(f"[WARNING] MCTS took {elapsed:.2f}s (target: <1s)")
     
     # Get best move and move probabilities
     best_move = mcts.get_best_move()
@@ -122,16 +120,6 @@ def test_func(ctx: GameContext):
     
     # Log the move probabilities for analysis (using Move objects as keys)
     ctx.logProbabilities(move_probs)
-    
-    # Print top 5 moves by visit count
-    print("\n[MCTS Results] Top 5 moves:")
-    sorted_moves = sorted(move_probs.items(), key=lambda x: x[1], reverse=True)[:5]
-    for i, (move, prob) in enumerate(sorted_moves, 1):
-        visits = mcts.root.children[move].visit_count
-        avg_value = mcts.root.children[move].value_sum / visits if visits > 0 else 0
-        print(f"  {i}. {move} - Prob: {prob:.3f}, Visits: {visits}, Avg Value: {avg_value:.3f}")
-    
-    print(f"\n[BEST MOVE] {best_move} (visits: {mcts.root.children[best_move].visit_count})")
     
     return best_move
 

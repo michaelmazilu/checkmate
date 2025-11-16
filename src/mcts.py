@@ -129,8 +129,8 @@ class MCTS:
         for i in range(self.num_simulations):
             self._run_simulation()
             
-            # Apply Dirichlet noise to root after first expansion
-            if not self.root_expanded and self.root.children:
+            # Apply Dirichlet noise to root after first expansion (only if enabled)
+            if not self.root_expanded and self.root.children and self.dirichlet_epsilon > 0:
                 self._add_dirichlet_noise_to_root()
                 self.root_expanded = True
     
