@@ -550,6 +550,10 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
         }, checkpoint_path)
         print(f"  Checkpoint saved: {checkpoint_path}")
         
+        # Commit checkpoint to Modal storage immediately
+        volume.commit()
+        print(f"  ✓ Checkpoint committed to Modal storage")
+        
         # Save as best model if loss improved
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -567,6 +571,8 @@ def train_model(data_path: str = None, resume_from_checkpoint: str = None):
                 }
             }, MODEL_PATH)
             print(f"  ✓ New best model saved (loss: {avg_loss:.4f})")
+            volume.commit()
+            print(f"  ✓ Best model committed to Modal storage")
     
     print("\n[4/5] Finalizing...")
     
